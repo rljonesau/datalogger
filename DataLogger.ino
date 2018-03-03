@@ -83,7 +83,7 @@ const int LED_RED = 2;
 const int LED_GRN = 3;
 const int SDChipSelect = 10;      // SPI chip select pin
 const int updateInterval = 60;    // interval to update the logging string
-const int writeInterval = 1500;   // interval to write to SD card (multiple of update interval)
+const int writeInterval = 600;   // interval to write to SD card (multiple of update interval)
 const int TIMER_RATE_ms = 5;        // interval to sample an ADC, (x6 to cycle thru all)
 
 
@@ -294,7 +294,8 @@ void loop() {
       //
       // create a filename based upon the current date, convert dots to dashes, 
       // truncate year from 4 to 2 digits
-      String FileName = DateStr;
+      String FileName;
+      FileName = DateStr.c_str();
       FileName.replace(".", "-");
       FileName.remove(6, 2);
       FileName += ".txt";
