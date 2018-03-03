@@ -29,9 +29,39 @@
 
  */
 
+//#define TEST
+
+#ifndef TEST
 #include <SPI.h>
 #include <SD.h>
 #include <DS3231.h>
+#else
+#define FILE_WRITE 1
+struct File {
+  void print(const __FlashStringHelper* str) {};
+  void println(const __FlashStringHelper* str) {};
+  void print(String& str) {};
+  void println(String& str) {};
+  void flush() {};
+  void close() {};
+  operator bool() {return true; };
+};
+struct SD {
+  File file;
+  int begin(int CS) { return 1;};
+  int exists(const char* name) { return 1; };
+  File open(const char* name, int mode) { return file; };
+  void end() {};
+} SD;
+struct DS3231 {
+  DS3231(int DA, int CL) {};
+  void begin() {};
+  String getDateStr() { return "03-03-2018"; };
+  String getDOWStr() { return "Saturday"; };
+  String getTimeStr() { return "00:00:00"; };
+};
+#endif
+
 #include <MsTimer2.h>
 
 //#define SET_RTC    // uncomment this, and set the correct time/date below - only do this ince, then undefine again
@@ -51,8 +81,9 @@ void FlashLED(int pin, int times, int ontime = 100, int offtime = 100);
 // pin definitions
 const int LED_RED = 2;
 const int LED_GRN = 3;
-const int SDChipSelect = 10;    // SPI chip select pin
-const int updateInterval = 1000;    // interval to update the log
+const int SDChipSelect = 10;      // SPI chip select pin
+const int updateInterval = 60;    // interval to update the logging string
+const int writeInterval = 1500;   // interval to write to SD card (multiple of update interval)
 const int TIMER_RATE_ms = 5;        // interval to sample an ADC, (x6 to cycle thru all)
 
 
@@ -179,7 +210,7 @@ void SampleIps()
 
 void setup() {
   // Open serial communications and wait for port to open:
-  Serial.begin(9600);
+  Serial.begin(115200);
  
   RTC.begin();
   // The following lines can be #defined to set the date and time
@@ -207,147 +238,148 @@ void setup() {
   MsTimer2::start();
 }
 
+String LoggerString;
+
 void loop() {
 
+  static int cyclecount = 0;
+  
   // sampling is driven by a timer callback
   // wait until a set has been completed before processing
   if(!Samples.Done())
     return;
-    
+
 
   // copy the samples for reporting purposes
   // reset the sample set
   sSamples Report;
   cli();
   Report.Copy(Samples);
-  Samples.Reset(updateInterval / TIMER_RATE_ms);  // reset the max/min values for the next set (second)
+  Samples.Reset(updateInterval / TIMER_RATE_ms);  // reset the max/min values for the next set 
   sei();
 
 
   String DateStr = RTC.getDateStr();
   String DOWStr = RTC.getDOWStr();
 
-
-  if(SD.begin(SDChipSelect)) {
+  // make a string for assembling the data to log:
+  String logStr = ",";   // initial comma for data lines allows reserves status fields in the first column in excel
     
-    //
-    // create a filename based upon the current date, convert dots to dashes, 
-    // truncate year from 4 to 2 digits
-    String FileName = DateStr;
-    FileName.replace(".", "-");
-    FileName.remove(6, 2);
-    FileName += ".txt";
-
-    // check if a new filename, if so flag it
-    bool bNewFile = !SD.exists(FileName.c_str());  
-
-    // report transition events, new day, new card etc
-    if (bCardOut) {
-      Serial.println(F("\n\n*** CARD INSERTED ***"));
-    }
-    if(bNewFile) {
-      Serial.println(F("*** NEW FILE ***"));
-      Serial.println(FileName);
-    }
-    else if(bFirstPass) {
-      Serial.println(F("*** RESET ***"));
-      Serial.print(F(" Appending to: "));
-      Serial.println(FileName);
-    }
-    else if(bCardOut) {
-      Serial.print(F("Appending to: "));
-      Serial.println(FileName);
-    }
+  // Set time in log string
+  logStr += RTC.getTimeStr();
+  logStr += ",";
     
-    
-    // Open the file. 
-    // Note that only one file can be open at a time,
-    // so you have to close this one before opening another.
-    File dataFile = SD.open(FileName.c_str(), FILE_WRITE);
-  
-    // if the file is available, write to it, blip LED green:
-    if (dataFile) {
-      digitalWrite(LED_GRN, HIGH);
+  // read value of sensors and append to the string:
+  logStr += String(Report.Ip1.getAvg());
+  logStr += ",";
+  logStr += String(Report.Ip2.getAvg());
+  logStr += ",";
+  logStr += String(Report.Ip3.getAvg());
+  logStr += ",";
+  logStr += String(Report.Ip4.getAvg());
+  logStr += ",";
+  logStr += String(Report.Ip5.getAvg());
+  logStr += ",";
+  logStr += String(Report.Ip6.getAvg());
+  logStr += "\n";
 
-      Serial.print(F("Opened: "));
-      Serial.print(FileName);
+  LoggerString += logStr;
 
-      // make a string for assembling the data to log:
-      String logStr = ",";   // initial comma for data lines allows reserves status fields in the first column in excel
-    
-      // Set time in log string
-      logStr += RTC.getTimeStr();
-      logStr += ",";
-    
-      // read max/min of sensors and append to the string:
-      logStr += String(Report.Ip1.minVal);
-      logStr += ",";
-      logStr += String(Report.Ip1.maxVal);
-      logStr += ",";
-      logStr += String(Report.Ip2.minVal);
-      logStr += ",";
-      logStr += String(Report.Ip2.maxVal);
-      logStr += ",";
-      logStr += String(Report.Ip3.minVal);
-      logStr += ",";
-      logStr += String(Report.Ip3.maxVal);
-      logStr += ",";
-      logStr += String(Report.Ip4.minVal);
-      logStr += ",";
-      logStr += String(Report.Ip4.maxVal);
-      logStr += ",";
-      logStr += String(Report.Ip5.minVal);
-      logStr += ",";
-      logStr += String(Report.Ip5.maxVal);
-      logStr += ",";
-      logStr += String(Report.Ip6.minVal);
-      logStr += ",";
-      logStr += String(Report.Ip6.maxVal);
+  cyclecount++;
+  if(cyclecount >= (writeInterval / updateInterval)) {
+    cyclecount = 0;
 
+    if(SD.begin(SDChipSelect)) {
+    
+      //
+      // create a filename based upon the current date, convert dots to dashes, 
+      // truncate year from 4 to 2 digits
+      String FileName = DateStr;
+      FileName.replace(".", "-");
+      FileName.remove(6, 2);
+      FileName += ".txt";
+
+      // check if a new filename, if so flag it
+      bool bNewFile = !SD.exists(FileName.c_str());  
+
+      // report transition events, new day, new card etc
+      if (bCardOut) {
+        Serial.println(F("\n\n*** CARD INSERTED ***"));
+      }
       if(bNewFile) {
-        // as this is a new file, add some human friendly headers at the start:
-        // a general header for ID'ing the colums
-        dataFile.println(F("Status,Time,Min1,Max1,Min2,Max2,Min3,Max3,Min4,Max4,Min5,Max5,Min6,Max6"));
-        dataFile.println(F("------,----,----,----,----,----,----,----,----,----,----,----,----,----"));
-        String StartInfo = DOWStr + " " + DateStr;
-        // insert start Day/Date of file (may not be top of the day 00:00:00)
-        dataFile.println(StartInfo);
+        Serial.println(F("*** NEW FILE ***"));
+        Serial.println(FileName);
       }
-      // insert status info; *should only appear in the first column*
-      if(bFirstPass) {
-        dataFile.println(F("*** RESET ***"));
+      else if(bFirstPass) {
+        Serial.println(F("*** RESET ***"));
+        Serial.print(F(" Appending to: "));
+        Serial.println(FileName);
       }
-      if(bCardOut) {
-        dataFile.println(F("*** CARD INSERTED ***"));
+      else if(bCardOut) {
+        Serial.print(F("Appending to: "));
+        Serial.println(FileName);
       }
+     
+    
+      // Open the file. 
+      // Note that only one file can be open at a time,
+      // so you have to close this one before opening another.
+      File dataFile = SD.open(FileName.c_str(), FILE_WRITE);
+  
+      // if the file is available, write to it, blip LED green:
+      if (dataFile) {
+        digitalWrite(LED_GRN, HIGH);
 
-      // log the readings to the SD card
-      dataFile.println(logStr);
+        Serial.print(F("Opened: "));
+        Serial.print(FileName);
+
+        if(bNewFile) {
+          // as this is a new file, add some human friendly headers at the start:
+          // a general header for ID'ing the colums
+          dataFile.println(F("Status,Time,Ip1,Ip2,Ip3,Ip4,Ip5,Ip6"));
+          dataFile.println(F("------,----,----,----,----,----,----"));
+          String StartInfo = DOWStr + " " + DateStr;
+          // insert start Day/Date of file (may not be top of the day 00:00:00)
+          dataFile.println(StartInfo);
+        }
+        // insert status info; *should only appear in the first column*
+        if(bFirstPass) {
+          dataFile.println(F("*** RESET ***"));
+        }
+        if(bCardOut) {
+          dataFile.println(F("*** CARD INSERTED ***"));
+        }
+
+        // log the readings to the SD card
+        dataFile.print(LoggerString);
         
-      // print to the serial port too:
-      Serial.print(F(" >> "));
-      Serial.println(logStr);
+        // print to the serial port too:
+        Serial.print(F(" >> "));
+        Serial.println(LoggerString);
 
-      dataFile.close();
-      dataFile.flush();
+        LoggerString = "";
+
+        dataFile.close();
+        dataFile.flush();
       
-      digitalWrite(LED_GRN, LOW);
-    }
-    // if the file can't be opened, pop up an error, blip LED red:
+        digitalWrite(LED_GRN, LOW);
+      }
+      // if the file can't be opened, pop up an error, blip LED red:
+      else {
+        Serial.print(F("error opening "));
+        Serial.println(FileName);
+        FlashLED(LED_RED, 10);
+      }
+      SD.end();
+      bCardOut = 0;
+    } 
     else {
-      Serial.print(F("error opening "));
-      Serial.println(FileName);
-      FlashLED(LED_RED, 10);
+      Serial.println(F("SD card inserted?"));
+      FlashLED(LED_RED, 3);
+      bCardOut = 1;
     }
-    SD.end();
-    bCardOut = 0;
-  } 
-  else {
-    Serial.println(F("SD card inserted?"));
-    FlashLED(LED_RED, 3);
-    bCardOut = 1;
+    bFirstPass = 0;
   }
-  bFirstPass = 0;
 }
 
 
